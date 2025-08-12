@@ -1,0 +1,1021 @@
+openapi: 3.0.3
+info:
+  title: RAG API
+  description: |
+    S3 Vectorsを使用したRAG（Retrieval-Augmented Generation）システムAPI
+
+    ## 概要
+    文書の追加・検索機能を提供し、埋め込みベクトルベースの意味検索とLLMによる回答生成を行います。
+
+    ## アーキテクチャ
+    - **埋め込み**: Amazon Bedrock Titan Text Embeddings v2
+    - **ベクトルDB**: Amazon S3 Vectors
+    - **LLM**: Claude Sonnet 4
+    - **インフラ**: AWS Lambda + API Gateway (サーバーレス)
+
+    ## マルチテナント対応
+    - **認証**: JWT/Cognito認証によるユーザー識別
+    - **データ分離**: ユーザー別インデックスによる完全分離
+    - **権限管理**: 読み取り/書き込み権限の細かい制御
+    - **カスタマイズ**: ユーザー別チャットボット設定
+  version: 2.0.0
+  contact:
+    name: RAG API Support
+    email: support@example.com
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://{apiGatewayId}.execute-api.{region}.amazonaws.com/Prod
+    description: AWS API Gateway Production
+    variables:
+      apiGatewayId:
+        default: your-api-gateway-id
+        description: API Gateway ID
+      region:
+        default: us-east-1
+        description: AWS Region
+
+tags:
+  - name: documents
+    description: 文書管理機能
+  - name: query
+    description: 質問応答機能
+  - name: user
+    description: ユーザー管理機能
+  - name: auth
+    description: 認証・認可機能
+
+paths:
+  /add-document:
+    post:
+      tags:
+        - documents
+      summary: 文書追加
+      security:
+        - bearerAuth: [write]
+      description: |
+        文書をシステムに追加し、ベクトル化して検索可能にします。
+        
+        **処理フロー:**
+        1. テキストをチャンク分割（chunk_size: 1000, overlap: 200）
+        2. 各チャンクをBedrock Embedding Modelでベクトル化
+        3. S3 Vectorsにベクトルとメタデータを保存
+      operationId: addDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddDocumentRequest'
+            examples:
+              sample_document:
+                summary: サンプル文書の追加
+                value:
+                  text: "これはサンプル文書です。RAGシステムで検索対象となります。"
+                  title: "サンプル文書"
+              long_document:
+                summary: 長い文書の追加例
+                value:
+                  text: "これは長い文書の例です。複数のチャンクに分割され、それぞれがベクトル化されます。文書が長い場合は自動的にチャンク分割されるため、効率的な検索が可能になります。"
+                  title: "長い文書の例"
+      responses:
+        '200':
+          description: 文書追加成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddDocumentResponse'
+              examples:
+                success:
+                  summary: 成功例
+                  value:
+                    message: "Successfully added 3 vectors"
+                    vector_count: 3
+        '400':
+          description: リクエスト形式エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_field:
+                  summary: 必須フィールド不足
+                  value:
+                    error: "Missing required field: text"
+                invalid_json:
+                  summary: JSON形式エラー
+                  value:
+                    error: "Invalid JSON format"
+        '500':
+          description: サーバー内部エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                bedrock_error:
+                  summary: Bedrockエラー
+                  value:
+                    error: "Bedrock service unavailable"
+                s3vectors_error:
+                  summary: S3 Vectorsエラー
+                  value:
+                    error: "Failed to store vectors in S3 Vectors"
+
+  /query:
+    post:
+      tags:
+        - query
+      summary: 質問応答
+      security:
+        - bearerAuth: [read]
+      description: |
+        保存された文書を検索し、関連情報に基づいてLLMが回答を生成します。
+        
+        **処理フロー:**
+        1. 質問をベクトル化してS3 Vectorsで類似検索実行（top_k: 3）
+        2. 検索結果をXML形式で構造化
+        3. Claude Sonnet 4に文脈と質問を送信してRAG回答を生成
+        4. レート制限対応の自動リトライ機能付き
+      operationId: queryDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+            examples:
+              general_question:
+                summary: 一般的な質問
+                value:
+                  question: "メイドインアビスのアビスとは何ですか？"
+              specific_question:
+                summary: 具体的な質問
+                value:
+                  question: "アビスの上昇負荷について詳しく教えてください。"
+      responses:
+        '200':
+          description: 質問応答成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+              examples:
+                success:
+                  summary: 成功例
+                  value:
+                    answer: "アビスは南ベオルスカの孤島にある巨大な縦穴です。その深さは現在も不明で、奈落の底と呼ばれています。アビスには古代文明の遺物が眠っており、多くの探窟家が冒険に挑んでいます。"
+        '400':
+          description: リクエスト形式エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_question:
+                  summary: 質問フィールド不足
+                  value:
+                    error: "Missing required field: question"
+                empty_question:
+                  summary: 空の質問
+                  value:
+                    error: "Question cannot be empty"
+        '500':
+          description: サーバー内部エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                search_error:
+                  summary: 検索エラー
+                  value:
+                    error: "Failed to search vectors"
+                llm_error:
+                  summary: LLM応答エラー
+                  value:
+                    error: "Failed to generate response from Claude"
+
+  # 新しいマルチテナント対応エンドポイント
+  /users/{user_id}/documents:
+    post:
+      tags:
+        - user
+        - documents
+      summary: ユーザー別文書追加
+      description: |
+        指定されたユーザーの専用知識ベースに文書を追加します。
+        ユーザーは自分のデータにのみアクセス可能です。
+      operationId: addUserDocument
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ユーザーID
+          example: "user123"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddDocumentRequest'
+            examples:
+              personal_note:
+                summary: 個人メモの追加
+                value:
+                  text: "これは私の個人的なメモです。プロジェクトの進捗と今後の計画について記録しています。"
+                  title: "プロジェクト進捗メモ"
+      responses:
+        '200':
+          description: 文書追加成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserDocumentResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    
+    get:
+      tags:
+        - user
+        - documents
+      summary: ユーザー文書一覧
+      description: ユーザーが追加した文書の一覧を取得します。
+      operationId: getUserDocuments
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ユーザーID
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: 取得件数
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: オフセット
+      responses:
+        '200':
+          description: 文書一覧取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /users/{user_id}/documents/{document_id}:
+    delete:
+      tags:
+        - user
+        - documents
+      summary: ユーザー文書削除
+      description: 指定されたユーザーの文書を削除します。
+      operationId: deleteUserDocument
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ユーザーID
+        - name: document_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: 文書ID
+      responses:
+        '200':
+          description: 文書削除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Document deleted successfully"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: 文書が見つからない
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/{user_id}/query:
+    post:
+      tags:
+        - user
+        - query
+      summary: ユーザー専用質問応答
+      description: |
+        指定されたユーザーの知識ベースに対してのみ質問を実行します。
+        他のユーザーのデータには一切アクセスしません。
+      operationId: queryUserDocuments
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: ユーザーID
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserQueryRequest'
+            examples:
+              personal_query:
+                summary: 個人的な質問
+                value:
+                  question: "私のプロジェクトの進捗はどうなっていますか？"
+                  preferences:
+                    language: "ja"
+                    max_results: 5
+      responses:
+        '200':
+          description: 質問応答成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserQueryResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /users/{user_id}/chatbot/config:
+    get:
+      tags:
+        - user
+      summary: ユーザーチャットボット設定取得
+      description: ユーザー固有のチャットボット設定を取得します。
+      operationId: getChatbotConfig
+      security:
+        - bearerAuth: [read]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: 設定取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatbotConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+    put:
+      tags:
+        - user
+      summary: ユーザーチャットボット設定更新
+      description: ユーザー固有のチャットボット設定を更新します。
+      operationId: updateChatbotConfig
+      security:
+        - bearerAuth: [write]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatbotConfigUpdate'
+      responses:
+        '200':
+          description: 設定更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatbotConfig'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  # 認証関連エンドポイント
+  /auth/login:
+    post:
+      tags:
+        - auth
+      summary: ユーザーログイン
+      description: ユーザー認証を行いJWTトークンを発行します。
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: ログイン成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: 認証失敗
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/register:
+    post:
+      tags:
+        - auth
+      summary: ユーザー登録
+      description: 新しいユーザーを登録します。
+      operationId: register
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: ユーザー登録成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegisterResponse'
+        '400':
+          description: 登録情報エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: ユーザー既存エラー
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/refresh:
+    post:
+      tags:
+        - auth
+      summary: トークン更新
+      description: リフレッシュトークンを使用してアクセストークンを更新します。
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: トークン更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: リフレッシュトークン無効
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+components:
+  schemas:
+    AddDocumentRequest:
+      type: object
+      required:
+        - text
+        - title
+      properties:
+        text:
+          type: string
+          description: 追加する文書のテキスト内容
+          example: "これはサンプル文書です。検索対象となります。"
+          minLength: 1
+          maxLength: 100000
+        title:
+          type: string
+          description: 文書のタイトル
+          example: "サンプル文書"
+          minLength: 1
+          maxLength: 200
+
+    AddDocumentResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          description: 成功メッセージ
+          example: "Successfully added 3 vectors"
+        vector_count:
+          type: integer
+          description: 追加されたベクトル数
+          example: 3
+          minimum: 1
+
+    QueryRequest:
+      type: object
+      required:
+        - question
+      properties:
+        question:
+          type: string
+          description: 質問内容
+          example: "メイドインアビスについて教えてください。"
+          minLength: 1
+          maxLength: 1000
+
+    QueryResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+          description: LLMが生成した回答
+          example: "メイドインアビスは、つくしあきひとによる漫画作品で、巨大な縦穴「アビス」を舞台とした冒険ファンタジーです。"
+
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          description: エラーメッセージ
+          example: "An error occurred"
+
+    # マルチテナント対応スキーマ
+    UserContext:
+      type: object
+      description: ユーザーコンテキスト情報
+      required:
+        - user_id
+      properties:
+        user_id:
+          type: string
+          description: ユーザー識別子
+          example: "user123"
+        tenant_id:
+          type: string
+          description: テナント識別子  
+          example: "org456"
+        preferences:
+          $ref: '#/components/schemas/UserPreferences'
+
+    UserPreferences:
+      type: object
+      description: ユーザー固有設定
+      properties:
+        language:
+          type: string
+          enum: [ja, en]
+          default: ja
+          description: 回答言語
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+          description: 最大検索結果数
+        chatbot_persona:
+          type: string
+          description: チャットボットのペルソナ設定
+          example: "あなたは親切で知識豊富なアシスタントです。"
+        temperature:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+          description: LLM応答の創造性レベル
+
+    UserQueryRequest:
+      type: object
+      required:
+        - question
+      properties:
+        question:
+          type: string
+          description: 質問内容
+          example: "私のプロジェクトについて教えてください"
+          minLength: 1
+          maxLength: 1000
+        preferences:
+          $ref: '#/components/schemas/UserPreferences'
+
+    UserQueryResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+          description: LLMが生成した回答
+          example: "あなたのプロジェクトについて、保存されている文書から以下の情報を見つけました..."
+        sources:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentSource'
+          description: 回答の根拠となった文書情報
+        user_context:
+          $ref: '#/components/schemas/UserContext'
+
+    UserDocumentResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "Successfully added 3 vectors to user knowledge base"
+        vector_count:
+          type: integer
+          example: 3
+        document_id:
+          type: string
+          example: "doc_12345"
+        user_id:
+          type: string
+          example: "user123"
+
+    DocumentSource:
+      type: object
+      properties:
+        document_id:
+          type: string
+          example: "doc_12345"
+        title:
+          type: string
+          example: "プロジェクト進捗メモ"
+        relevance_score:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          example: 0.85
+        snippet:
+          type: string
+          example: "プロジェクトは順調に進んでおり..."
+
+    DocumentListResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            $ref: '#/components/schemas/DocumentInfo'
+        total:
+          type: integer
+          example: 25
+        limit:
+          type: integer
+          example: 20
+        offset:
+          type: integer
+          example: 0
+
+    DocumentInfo:
+      type: object
+      properties:
+        document_id:
+          type: string
+          example: "doc_12345"
+        title:
+          type: string
+          example: "プロジェクト進捗メモ"
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:30:00Z"
+        updated_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:30:00Z"
+        vector_count:
+          type: integer
+          example: 3
+        content_length:
+          type: integer
+          example: 1500
+
+    ChatbotConfig:
+      type: object
+      properties:
+        user_id:
+          type: string
+          example: "user123"
+        persona:
+          type: string
+          example: "あなたは私の個人アシスタントです。"
+        language:
+          type: string
+          enum: [ja, en]
+          default: ja
+        temperature:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.7
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 3
+        system_prompt:
+          type: string
+          example: "ユーザーの個人的な文書に基づいて回答してください。"
+
+    ChatbotConfigUpdate:
+      type: object
+      properties:
+        persona:
+          type: string
+          example: "あなたは専門的なアドバイザーです。"
+        language:
+          type: string
+          enum: [ja, en]
+        temperature:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 10
+        system_prompt:
+          type: string
+
+    # 認証関連スキーマ
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        password:
+          type: string
+          format: password
+          example: "password123"
+
+    LoginResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        refresh_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+        token_type:
+          type: string
+          example: "Bearer"
+        expires_in:
+          type: integer
+          example: 3600
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+        - name
+      properties:
+        email:
+          type: string
+          format: email
+          example: "newuser@example.com"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "password123"
+        name:
+          type: string
+          example: "田中太郎"
+        preferences:
+          $ref: '#/components/schemas/UserPreferences'
+
+    RegisterResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "User registered successfully"
+        user:
+          $ref: '#/components/schemas/UserInfo'
+
+    RefreshTokenRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+
+    UserInfo:
+      type: object
+      properties:
+        user_id:
+          type: string
+          example: "user123"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        name:
+          type: string
+          example: "田中太郎"
+        created_at:
+          type: string
+          format: date-time
+          example: "2025-01-15T10:30:00Z"
+        preferences:
+          $ref: '#/components/schemas/UserPreferences'
+
+  # 共通レスポンス定義
+  responses:
+    Unauthorized:
+      description: 認証が必要です
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "Authentication required"
+    
+    Forbidden:
+      description: アクセス権限がありません
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "Access denied"
+    
+    BadRequest:
+      description: リクエスト形式エラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "Invalid request format"
+    
+    InternalError:
+      description: サーバー内部エラー
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error: "Internal server error"
+
+  # セキュリティ定義
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        **JWT認証**
+        
+        JWT トークンによる認証を使用します。
+        トークンにはユーザーID、テナント情報、権限が含まれます。
+        
+        ヘッダー形式: `Authorization: Bearer {token}`
+    
+    cognitoAuth:
+      type: oauth2
+      description: |
+        **Cognito OAuth2認証**
+        
+        AWS Cognitoユーザープールによる認証
+      flows:
+        authorizationCode:
+          authorizationUrl: https://your-domain.auth.us-east-1.amazoncognito.com/oauth2/authorize
+          tokenUrl: https://your-domain.auth.us-east-1.amazoncognito.com/oauth2/token
+          scopes:
+            read: 文書検索権限
+            write: 文書追加権限
+            admin: 管理者権限
+
+# 全エンドポイントでJWT認証を要求
+security:
+  - bearerAuth: []
+
+externalDocs:
+  description: プロジェクトリポジトリ
+  url: https://github.com/your-username/rag-api
+
+# 拡張情報
+x-amazon-apigateway-integration:
+  description: AWS Lambda統合設定
+  lambda_functions:
+    query_handler: 
+      function_name: RAGQueryFunction
+      timeout: 30
+      memory: 512
+    add_document_handler:
+      function_name: AddDocumentFunction  
+      timeout: 300
+      memory: 512
+    auth_handler:
+      function_name: AuthFunction
+      timeout: 30
+      memory: 256
+    user_handler:
+      function_name: UserManagementFunction
+      timeout: 30
+      memory: 256
+
+x-development-info:
+  local_tools:
+    - name: "query_example.py"
+      description: "ローカル環境での質問実行ツール"
+      usage: "python tools/query_example.py -q '質問内容'"
+    - name: "add_document_example.py"
+      description: "ローカル環境での文書追加ツール"
+      usage: "python tools/add_document_example.py -f document.txt -t 'タイトル'"
+  
+  environment_variables:
+    - name: VECTOR_BUCKET_NAME
+      default: "20250811-rag"
+      description: "S3 Vectorsバケット名"
+    - name: VECTOR_INDEX_NAME  
+      default: "20250811-rag-vector-index"
+      description: "S3 Vectorsインデックス名"
+    - name: AWS_REGION
+      default: "us-east-1"
+      description: "AWSリージョン"
+    - name: EMBEDDING_MODEL_ID
+      default: "amazon.titan-embed-text-v2:0"
+      description: "埋め込みモデルID"
+    - name: CHAT_MODEL_ID
+      default: "us.anthropic.claude-sonnet-4-20250514-v1:0"
+      description: "チャットモデルID"
+
+x-performance:
+  estimated_response_times:
+    add_document: "5-30秒（文書サイズ依存）"
+    query: "3-10秒（検索+LLM生成時間）"
+  
+  lambda_configuration:
+    runtime: "python3.11"
+    memory: "512MB" 
+    timeout: "30秒（add-document: 300秒）"
+  
+  rate_limiting:
+    bedrock_retry:
+      max_attempts: 3
+      backoff_strategy: "exponential + jitter"
+      base_delay: "2^attempt + random(0,1) seconds"

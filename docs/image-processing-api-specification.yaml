@@ -1,0 +1,795 @@
+openapi: 3.0.3
+info:
+  title: RAG API - 画像処理機能拡張
+  description: |
+    既存のRAGシステムに画像保存・ナレッジベース作成・画像ベースチャット機能を追加する
+    マルチテナント対応で、ユーザーごとに画像とナレッジベースが分離される
+  version: 2.0.0
+  contact:
+    name: RAG API Team
+  license:
+    name: MIT
+
+servers:
+  - url: https://your-api-gateway-url.amazonaws.com/prod
+    description: Production environment
+  - url: https://your-api-gateway-url.amazonaws.com/dev  
+    description: Development environment
+
+security:
+  - CognitoAuthorizer: []
+
+paths:
+  # 画像アップロード・管理エンドポイント
+  /images:
+    post:
+      summary: 画像をアップロード
+      description: |
+        画像ファイルをアップロードし、S3に保存
+        同時にOCR・Vision解析を実行してメタデータを抽出
+      tags:
+        - Image Management
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - image
+                - title
+              properties:
+                image:
+                  type: string
+                  format: binary
+                  description: 画像ファイル (JPEG, PNG, GIF, WebP)
+                title:
+                  type: string
+                  minLength: 1
+                  maxLength: 200
+                  description: 画像のタイトル
+                description:
+                  type: string
+                  maxLength: 1000
+                  description: 画像の説明（オプション）
+                tags:
+                  type: array
+                  items:
+                    type: string
+                  description: 画像に付与するタグ
+                extract_text:
+                  type: boolean
+                  default: true
+                  description: OCRでテキスト抽出を実行するか
+                create_knowledge:
+                  type: boolean
+                  default: true
+                  description: ナレッジベースエントリを自動作成するか
+      responses:
+        '200':
+          description: 画像アップロード成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Image uploaded and processed successfully"
+                  image_id:
+                    type: string
+                    format: uuid
+                    description: 生成された画像ID
+                  user_id:
+                    type: string
+                    description: ユーザーID
+                  file_info:
+                    type: object
+                    properties:
+                      filename:
+                        type: string
+                      size_bytes:
+                        type: integer
+                      format:
+                        type: string
+                      dimensions:
+                        type: object
+                        properties:
+                          width:
+                            type: integer
+                          height:
+                            type: integer
+                  extracted_text:
+                    type: string
+                    description: OCRで抽出されたテキスト
+                  vision_analysis:
+                    type: object
+                    properties:
+                      description:
+                        type: string
+                      objects:
+                        type: array
+                        items:
+                          type: string
+                      confidence:
+                        type: number
+                        format: float
+                  knowledge_vectors_created:
+                    type: integer
+                    description: 作成されたベクトル数
+                  quota_status:
+                    $ref: '#/components/schemas/QuotaStatus'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+    get:
+      summary: ユーザーの画像一覧を取得
+      description: ユーザーがアップロードした画像の一覧を取得
+      tags:
+        - Image Management
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+          description: 取得する画像数の上限
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: 取得開始位置のオフセット
+        - name: tags
+          in: query
+          schema:
+            type: array
+            items:
+              type: string
+          style: form
+          explode: false
+          description: タグでフィルタ
+      responses:
+        '200':
+          description: 画像一覧取得成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  images:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImageInfo'
+                  total:
+                    type: integer
+                  limit:
+                    type: integer
+                  offset:
+                    type: integer
+                  user_id:
+                    type: string
+
+  /images/{image_id}:
+    get:
+      summary: 特定画像の詳細情報を取得
+      description: 画像のメタデータとOCR結果、解析結果を取得
+      tags:
+        - Image Management
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 画像詳細取得成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      summary: 画像を削除
+      description: |
+        画像ファイルとそれに関連するナレッジベースエントリを削除
+        関連するベクトルデータも削除される
+      tags:
+        - Image Management
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: 削除成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "Image and related knowledge base entries deleted successfully"
+                  deleted_vectors:
+                    type: integer
+                    description: 削除されたベクトル数
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # 画像ベースナレッジベース機能
+  /images/{image_id}/knowledge:
+    post:
+      summary: 画像からナレッジベースエントリを作成
+      description: |
+        既存の画像からナレッジベースエントリを手動で作成・更新
+        OCR結果とVision解析結果を組み合わせてベクトル化
+      tags:
+        - Knowledge Base
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  description: ナレッジベースエントリのタイトル
+                custom_description:
+                  type: string
+                  description: カスタム説明文
+                include_ocr_text:
+                  type: boolean
+                  default: true
+                  description: OCRテキストを含めるか
+                include_vision_analysis:
+                  type: boolean
+                  default: true
+                  description: Vision解析結果を含めるか
+                additional_context:
+                  type: string
+                  description: 追加のコンテキスト情報
+      responses:
+        '200':
+          description: ナレッジベース作成成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  knowledge_entry_id:
+                    type: string
+                    format: uuid
+                  vector_count:
+                    type: integer
+                  quota_status:
+                    $ref: '#/components/schemas/QuotaStatus'
+
+  # 画像ベースクエリエンドポイント
+  /images/query:
+    post:
+      summary: 画像ベースでクエリを実行
+      description: |
+        ユーザーの画像ナレッジベースに対してクエリを実行
+        OCRテキストとVision解析結果の両方から関連情報を検索
+      tags:
+        - Image Query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - question
+              properties:
+                question:
+                  type: string
+                  minLength: 1
+                  description: 質問文
+                search_scope:
+                  type: string
+                  enum: [all, text_only, vision_only]
+                  default: all
+                  description: 検索対象の範囲
+                max_results:
+                  type: integer
+                  minimum: 1
+                  maximum: 10
+                  default: 3
+                  description: 返す結果の最大数
+                image_tags:
+                  type: array
+                  items:
+                    type: string
+                  description: 特定のタグを持つ画像のみを検索対象にする
+                preferences:
+                  $ref: '#/components/schemas/UserPreferences'
+      responses:
+        '200':
+          description: クエリ実行成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                    description: AI生成された回答
+                  sources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImageSource'
+                  user_context:
+                    type: object
+                    properties:
+                      user_id:
+                        type: string
+                      preferences_applied:
+                        type: boolean
+                      search_scope:
+                        type: string
+                  confidence:
+                    type: number
+                    format: float
+                    minimum: 0
+                    maximum: 1
+                    description: 回答の信頼度
+                  quota_status:
+                    $ref: '#/components/schemas/QuotaStatus'
+        '429':
+          $ref: '#/components/responses/QuotaExceeded'
+
+  # ハイブリッドクエリ（テキスト+画像）
+  /query/hybrid:
+    post:
+      summary: ハイブリッドクエリ（テキスト+画像ナレッジベース）
+      description: |
+        テキストドキュメントと画像ナレッジベースの両方から情報を検索
+        統合された回答を生成
+      tags:
+        - Hybrid Query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - question
+              properties:
+                question:
+                  type: string
+                  minLength: 1
+                search_text_documents:
+                  type: boolean
+                  default: true
+                  description: テキストドキュメントを検索対象に含める
+                search_image_knowledge:
+                  type: boolean
+                  default: true
+                  description: 画像ナレッジベースを検索対象に含める
+                max_text_results:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                  default: 2
+                max_image_results:
+                  type: integer
+                  minimum: 0
+                  maximum: 10
+                  default: 2
+                preferences:
+                  $ref: '#/components/schemas/UserPreferences'
+      responses:
+        '200':
+          description: ハイブリッドクエリ成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  answer:
+                    type: string
+                  text_sources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TextSource'
+                  image_sources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ImageSource'
+                  synthesis_note:
+                    type: string
+                    description: テキストと画像情報の統合に関する説明
+                  confidence:
+                    type: number
+                    format: float
+
+  # 画像解析機能
+  /images/{image_id}/analyze:
+    post:
+      summary: 画像の再解析を実行
+      description: |
+        既存画像に対してOCRやVision解析を再実行
+        新しい解析技術やモデルで再処理する場合に使用
+      tags:
+        - Image Analysis
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                analysis_types:
+                  type: array
+                  items:
+                    type: string
+                    enum: [ocr, vision, objects, faces, text_detection]
+                  description: 実行する解析の種類
+                force_reprocess:
+                  type: boolean
+                  default: false
+                  description: 既存の解析結果があっても再実行するか
+      responses:
+        '200':
+          description: 解析実行成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  image_id:
+                    type: string
+                  analysis_results:
+                    $ref: '#/components/schemas/AnalysisResults'
+                  updated_knowledge_vectors:
+                    type: integer
+
+  # 統計・クォータ情報
+  /images/statistics:
+    get:
+      summary: ユーザーの画像関連統計を取得
+      description: ユーザーの画像アップロード数、ストレージ使用量、解析実行数などの統計
+      tags:
+        - Statistics
+      responses:
+        '200':
+          description: 統計情報取得成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:
+                    type: string
+                  total_images:
+                    type: integer
+                  total_storage_mb:
+                    type: number
+                    format: float
+                  total_image_vectors:
+                    type: integer
+                  analysis_count:
+                    type: object
+                    properties:
+                      ocr:
+                        type: integer
+                      vision:
+                        type: integer
+                  quota_usage:
+                    $ref: '#/components/schemas/ImageQuotaUsage'
+
+# コンポーネント定義
+components:
+  securitySchemes:
+    CognitoAuthorizer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Amazon Cognito JWT token
+
+  schemas:
+    ImageInfo:
+      type: object
+      properties:
+        image_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+        filename:
+          type: string
+        size_bytes:
+          type: integer
+        format:
+          type: string
+        dimensions:
+          type: object
+          properties:
+            width:
+              type: integer
+            height:
+              type: integer
+        tags:
+          type: array
+          items:
+            type: string
+        created_at:
+          type: string
+          format: date-time
+        last_analyzed:
+          type: string
+          format: date-time
+        has_ocr_text:
+          type: boolean
+        has_vision_analysis:
+          type: boolean
+        knowledge_vector_count:
+          type: integer
+
+    ImageDetail:
+      allOf:
+        - $ref: '#/components/schemas/ImageInfo'
+        - type: object
+          properties:
+            s3_url:
+              type: string
+              format: uri
+              description: 画像のS3 URL（署名付き）
+            extracted_text:
+              type: string
+              description: OCRで抽出されたテキスト
+            vision_analysis:
+              $ref: '#/components/schemas/AnalysisResults'
+            knowledge_entries:
+              type: array
+              items:
+                type: object
+                properties:
+                  knowledge_id:
+                    type: string
+                    format: uuid
+                  title:
+                    type: string
+                  vector_count:
+                    type: integer
+
+    AnalysisResults:
+      type: object
+      properties:
+        ocr:
+          type: object
+          properties:
+            text:
+              type: string
+            confidence:
+              type: number
+              format: float
+            language:
+              type: string
+        vision:
+          type: object
+          properties:
+            description:
+              type: string
+            confidence:
+              type: number
+              format: float
+        objects:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              confidence:
+                type: number
+                format: float
+              bounding_box:
+                type: object
+                properties:
+                  x:
+                    type: number
+                  y:
+                    type: number
+                  width:
+                    type: number
+                  height:
+                    type: number
+
+    ImageSource:
+      type: object
+      properties:
+        image_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        relevance_score:
+          type: number
+          format: float
+        source_type:
+          type: string
+          enum: [ocr_text, vision_analysis, custom_description]
+        snippet:
+          type: string
+          description: 関連する部分のテキスト
+        thumbnail_url:
+          type: string
+          format: uri
+
+    TextSource:
+      type: object
+      properties:
+        document_id:
+          type: string
+        title:
+          type: string
+        relevance_score:
+          type: number
+          format: float
+        snippet:
+          type: string
+
+    UserPreferences:
+      type: object
+      properties:
+        chatbot_persona:
+          type: string
+        temperature:
+          type: number
+          format: float
+          minimum: 0
+          maximum: 1
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 10
+
+    QuotaStatus:
+      type: object
+      properties:
+        user_id:
+          type: string
+        plan_type:
+          type: string
+          enum: [free, basic, premium]
+        quotas:
+          type: object
+          properties:
+            documents:
+              $ref: '#/components/schemas/QuotaUsage'
+            vectors:
+              $ref: '#/components/schemas/QuotaUsage'
+            storage:
+              $ref: '#/components/schemas/QuotaUsage'
+            images:
+              $ref: '#/components/schemas/QuotaUsage'
+            monthly_queries:
+              $ref: '#/components/schemas/QuotaUsage'
+
+    QuotaUsage:
+      type: object
+      properties:
+        current:
+          type: number
+        max:
+          type: number
+        percentage:
+          type: number
+          format: float
+
+    ImageQuotaUsage:
+      type: object
+      properties:
+        total_images:
+          $ref: '#/components/schemas/QuotaUsage'
+        image_storage_mb:
+          $ref: '#/components/schemas/QuotaUsage'
+        image_vectors:
+          $ref: '#/components/schemas/QuotaUsage'
+        monthly_analyses:
+          $ref: '#/components/schemas/QuotaUsage'
+
+  responses:
+    BadRequest:
+      description: 不正なリクエスト
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              details:
+                type: string
+
+    NotFound:
+      description: リソースが見つからない
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Image not found or access denied"
+
+    QuotaExceeded:
+      description: クォータ制限に達している
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              quota_status:
+                $ref: '#/components/schemas/QuotaStatus'
+              recommendations:
+                type: array
+                items:
+                  type: string
+                example:
+                  - "Consider upgrading to Basic plan for more image storage"
+                  - "Delete unused images to free up space"
+
+    InternalServerError:
+      description: 内部サーバーエラー
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+                example: "Internal server error"
+
+tags:
+  - name: Image Management
+    description: 画像のアップロード、保存、管理機能
+  - name: Knowledge Base
+    description: 画像からのナレッジベース作成機能
+  - name: Image Query
+    description: 画像ベースクエリ機能
+  - name: Hybrid Query
+    description: テキスト+画像ハイブリッドクエリ機能
+  - name: Image Analysis
+    description: 画像解析・OCR・Vision機能
+  - name: Statistics
+    description: 統計情報・使用状況確認機能

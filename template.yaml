@@ -1,0 +1,362 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  rag-api
+  
+  S3 Vectorsを使用したRAGシステムのサンプルアプリケーション
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        VECTOR_BUCKET_NAME: !Ref VectorBucketName
+        VECTOR_INDEX_NAME: !Ref VectorIndexName
+
+Parameters:
+  VectorBucketName:
+    Type: String
+    Description: S3 Vectorsバケット名
+    Default: "20250811-rag"
+  
+  VectorIndexName:
+    Type: String  
+    Description: S3 Vectorsインデックス名
+    Default: "20250811-rag-vector-index"
+
+Resources:
+  # Cognito User Pool
+  RAGUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AWS::StackName}-user-pool"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: given_name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        - Name: family_name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+
+  # Cognito User Pool Client
+  RAGUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref RAGUserPool
+      ClientName: !Sub "${AWS::StackName}-client"
+      GenerateSecret: false
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+      AccessTokenValidity: 24
+      IdTokenValidity: 24
+      RefreshTokenValidity: 30
+      ExplicitAuthFlows:
+        - ADMIN_NO_SRP_AUTH
+        - USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      SupportedIdentityProviders:
+        - COGNITO
+
+  # API Gateway
+  RagApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Name: !Sub "${AWS::StackName}-rag-api"
+      Description: "RAG System API Gateway"
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt RAGUserPool.Arn
+            Identity:
+              Header: Authorization
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+
+  # Lambda Functions
+  RAGQueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: lambda_handler.lambda_handler
+      Events:
+        RAGQueryApi:
+          Type: Api
+          Properties:
+            Path: /query
+            Method: post
+            RestApiId: !Ref RagApiGateway
+            Auth:
+              Authorizer: NONE
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:GetVectors"
+                - "s3vectors:QueryVectors"
+              Resource: "*"
+
+  AddDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: lambda_handler.add_document_handler
+      Timeout: 300
+      Events:
+        AddDocumentApi:
+          Type: Api
+          Properties:
+            Path: /add-document
+            Method: post
+            RestApiId: !Ref RagApiGateway
+            Auth:
+              Authorizer: NONE
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:PutVectors"
+              Resource: "*"
+
+  # Multi-Tenant Lambda Functions
+  UserQueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_query_handler
+      Events:
+        UserQueryApi:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/query
+            Method: post
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:GetVectors"
+                - "s3vectors:QueryVectors"
+              Resource: "*"
+
+  UserAddDocumentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_add_document_handler
+      Timeout: 300
+      Events:
+        UserAddDocumentApi:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/documents
+            Method: post
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:PutVectors"
+              Resource: "*"
+
+  UserDocumentListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_document_list_handler
+      Events:
+        UserDocumentListApi:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/documents
+            Method: get
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "s3vectors:GetVectors"
+                - "s3vectors:ListDocuments"
+              Resource: "*"
+
+  UserDocumentDeleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_document_delete_handler
+      Events:
+        UserDocumentDeleteApi:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/documents/{document_id}
+            Method: delete
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "s3vectors:DeleteVectors"
+              Resource: "*"
+
+  # CORS Options Handler for all endpoints
+  OptionsHandler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.options_handler
+      Events:
+        # Legacy endpoints options
+        QueryOptions:
+          Type: Api
+          Properties:
+            Path: /query
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        AddDocumentOptions:
+          Type: Api
+          Properties:
+            Path: /add-document
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        # Multi-tenant endpoints options
+        UserQueryOptions:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/query
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        UserDocumentsOptions:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/documents
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        UserDocumentDeleteOptions:
+          Type: Api
+          Properties:
+            Path: /users/{user_id}/documents/{document_id}
+            Method: options
+            RestApiId: !Ref RagApiGateway
+
+Outputs:
+  # Cognito Information
+  UserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref RAGUserPool
+    Export:
+      Name: !Sub "${AWS::StackName}-user-pool-id"
+  
+  UserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref RAGUserPoolClient
+    Export:
+      Name: !Sub "${AWS::StackName}-user-pool-client-id"
+
+  RAGApiBaseUrl:
+    Description: "API Gateway base URL for RAG system"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod"
+    Export:
+      Name: !Sub "${AWS::StackName}-api-base-url"
+  
+  # Legacy endpoints
+  RAGQueryEndpoint:
+    Description: "RAG Query endpoint URL (legacy)"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/query"
+    Export:
+      Name: !Sub "${AWS::StackName}-query-endpoint"
+  
+  AddDocumentEndpoint:
+    Description: "Add Document endpoint URL (legacy)"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/add-document"
+    Export:
+      Name: !Sub "${AWS::StackName}-add-document-endpoint"
+  
+  # Multi-tenant endpoints
+  UserQueryEndpoint:
+    Description: "User Query endpoint URL template"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/users/{user_id}/query"
+    Export:
+      Name: !Sub "${AWS::StackName}-user-query-endpoint"
+  
+  UserDocumentsEndpoint:
+    Description: "User Documents endpoint URL template"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/users/{user_id}/documents"
+    Export:
+      Name: !Sub "${AWS::StackName}-user-documents-endpoint"
+  
+  UserDocumentDeleteEndpoint:
+    Description: "User Document Delete endpoint URL template"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/users/{user_id}/documents/{document_id}"
+    Export:
+      Name: !Sub "${AWS::StackName}-user-document-delete-endpoint"
+  
+  # Lambda Function ARNs
+  RAGQueryFunctionArn:
+    Description: "RAG Query Lambda Function ARN"
+    Value: !GetAtt RAGQueryFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-query-function-arn"
+  
+  AddDocumentFunctionArn:
+    Description: "Add Document Lambda Function ARN"
+    Value: !GetAtt AddDocumentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-add-document-function-arn"
+  
+  UserQueryFunctionArn:
+    Description: "User Query Lambda Function ARN"
+    Value: !GetAtt UserQueryFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-user-query-function-arn"
+  
+  UserAddDocumentFunctionArn:
+    Description: "User Add Document Lambda Function ARN"
+    Value: !GetAtt UserAddDocumentFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-user-add-document-function-arn"
+  
+  UserDocumentListFunctionArn:
+    Description: "User Document List Lambda Function ARN"
+    Value: !GetAtt UserDocumentListFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-user-document-list-function-arn"
+  
+  UserDocumentDeleteFunctionArn:
+    Description: "User Document Delete Lambda Function ARN"
+    Value: !GetAtt UserDocumentDeleteFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-user-document-delete-function-arn"
