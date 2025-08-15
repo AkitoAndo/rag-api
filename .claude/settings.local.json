@@ -37,7 +37,8 @@
       "Bash(aws:*)",
       "Bash(python:*)",
       "Bash(py -m venv:*)",
-      "Bash(py:*)"
+      "Bash(py:*)",
+      "Bash(git push:*)"
     ],
     "deny": [],
     "ask": [],

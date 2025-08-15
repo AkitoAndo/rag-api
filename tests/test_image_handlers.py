@@ -68,7 +68,6 @@ class TestImageHandlers:
             yield
 
     @mock_aws
-    @mock_aws
     def test_image_upload_success(self, sample_image_data, cognito_event_base, mock_environment):
         """画像アップロード成功テスト"""
         # DynamoDBテーブルを作成
@@ -219,7 +218,6 @@ Test Image\r
         assert not response_body['has_more']
     
     @mock_aws
-    @mock_aws
     def test_image_detail_success(self, cognito_event_base, mock_environment):
         """画像詳細取得成功テスト"""
         # DynamoDBテーブルを作成
@@ -279,7 +277,6 @@ Test Image\r
         assert response_body['vision_result']['description'] == 'A test image'
         assert 'image_url' in response_body
     
-    @mock_aws
     @mock_aws
     def test_image_delete_success(self, cognito_event_base, mock_environment):
         """画像削除成功テスト"""

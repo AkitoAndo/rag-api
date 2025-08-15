@@ -28,6 +28,7 @@ class TestExtendedQuotaSystem:
             yield
     
     @pytest.fixture
+    @mock_aws
     def quota_manager(self, mock_environment):
         """クォータマネージャーインスタンス"""
         return UserQuotaManager()
@@ -35,7 +36,7 @@ class TestExtendedQuotaSystem:
     @pytest.fixture
     def setup_dynamodb_tables(self):
         """DynamoDBテーブルのセットアップ"""
-        with mock_dynamodb():
+        with mock_aws():
             dynamodb = boto3.resource('dynamodb', region_name='us-east-1')
             
             # クォータテーブル

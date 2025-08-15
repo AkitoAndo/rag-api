@@ -46,7 +46,6 @@ class TestImageStorageClient:
             yield
 
     @mock_aws
-    @mock_aws
     def test_save_image_success(self, client, sample_image_data, mock_environment):
         """画像保存成功テスト"""
         # S3バケットを作成
@@ -300,7 +299,6 @@ class TestImageStorageClient:
         assert s3_key in presigned_url
         assert 'X-Amz-Signature' in presigned_url
     
-    @mock_aws
     @mock_aws
     def test_delete_image_success(self, client, mock_environment):
         """画像削除成功テスト"""

@@ -103,7 +103,8 @@ class UserQuotaManager:
     }
 
     def __init__(self):
-        self.dynamodb = boto3.resource('dynamodb')
+        region = os.getenv('AWS_REGION', 'us-east-1')
+        self.dynamodb = boto3.resource('dynamodb', region_name=region)
         self.quota_table_name = os.getenv('USER_QUOTA_TABLE', 'rag-user-quotas')
         self.usage_table_name = os.getenv('USER_USAGE_TABLE', 'rag-user-usage')
         
