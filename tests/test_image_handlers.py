@@ -4,7 +4,7 @@
 import json
 import pytest
 import boto3
-from moto import mock_s3, mock_dynamodb, mock_textract, mock_rekognition
+from moto import mock_aws
 from unittest.mock import patch, MagicMock
 import base64
 from io import BytesIO
@@ -67,8 +67,8 @@ class TestImageHandlers:
         }):
             yield
 
-    @mock_s3
-    @mock_dynamodb
+    @mock_aws
+    @mock_aws
     def test_image_upload_success(self, sample_image_data, cognito_event_base, mock_environment):
         """画像アップロード成功テスト"""
         # DynamoDBテーブルを作成
@@ -168,7 +168,7 @@ Test Image\r
         assert response_body['analysis']['ocr']['confidence'] == 0.95
         assert response_body['analysis']['vision']['confidence'] == 0.90
     
-    @mock_dynamodb
+    @mock_aws
     def test_image_list_success(self, cognito_event_base, mock_environment):
         """画像一覧取得成功テスト"""
         # DynamoDBテーブルを作成
@@ -218,8 +218,8 @@ Test Image\r
         assert response_body['total'] == 1
         assert not response_body['has_more']
     
-    @mock_s3
-    @mock_dynamodb
+    @mock_aws
+    @mock_aws
     def test_image_detail_success(self, cognito_event_base, mock_environment):
         """画像詳細取得成功テスト"""
         # DynamoDBテーブルを作成
@@ -279,8 +279,8 @@ Test Image\r
         assert response_body['vision_result']['description'] == 'A test image'
         assert 'image_url' in response_body
     
-    @mock_s3
-    @mock_dynamodb
+    @mock_aws
+    @mock_aws
     def test_image_delete_success(self, cognito_event_base, mock_environment):
         """画像削除成功テスト"""
         # DynamoDBテーブルを作成
@@ -388,7 +388,7 @@ Test Image\r
         assert len(response_body['image_sources']) == 1
         assert response_body['confidence'] == 0.9
     
-    @mock_dynamodb
+    @mock_aws
     def test_image_statistics_success(self, cognito_event_base, mock_environment):
         """画像統計取得成功テスト"""
         # DynamoDBテーブルを作成

@@ -3,7 +3,7 @@
 """
 import pytest
 import boto3
-from moto import mock_s3, mock_dynamodb
+from moto import mock_aws
 from unittest.mock import patch, MagicMock
 from io import BytesIO
 from PIL import Image
@@ -45,8 +45,8 @@ class TestImageStorageClient:
         }):
             yield
 
-    @mock_s3
-    @mock_dynamodb
+    @mock_aws
+    @mock_aws
     def test_save_image_success(self, client, sample_image_data, mock_environment):
         """画像保存成功テスト"""
         # S3バケットを作成
@@ -92,7 +92,7 @@ class TestImageStorageClient:
         thumbnail_response = s3_client.head_object(Bucket='test-image-bucket', Key=thumbnail_key)
         assert thumbnail_response['ContentLength'] > 0
     
-    @mock_dynamodb
+    @mock_aws
     def test_save_metadata_success(self, client, mock_environment):
         """メタデータ保存成功テスト"""
         # DynamoDBテーブルを作成
@@ -146,7 +146,7 @@ class TestImageStorageClient:
         assert item['vision_result']['description'] == "テスト画像の説明"
         assert 'created_at' in item
     
-    @mock_dynamodb
+    @mock_aws
     def test_list_user_images_success(self, client, mock_environment):
         """ユーザー画像一覧取得成功テスト"""
         # DynamoDBテーブルを作成
@@ -224,7 +224,7 @@ class TestImageStorageClient:
         assert len(filtered_images) == 1
         assert filtered_images[0]['title'] == 'テスト画像1'
     
-    @mock_dynamodb
+    @mock_aws
     def test_get_image_metadata_success(self, client, mock_environment):
         """画像メタデータ取得成功テスト"""
         # DynamoDBテーブルを作成
@@ -276,7 +276,7 @@ class TestImageStorageClient:
         assert metadata['ocr_result']['text'] == 'OCRテキスト'
         assert metadata['vision_result']['description'] == '画像の説明'
     
-    @mock_s3
+    @mock_aws
     def test_generate_presigned_url_success(self, client, mock_environment):
         """署名付きURL生成成功テスト"""
         # S3バケットを作成
@@ -300,8 +300,8 @@ class TestImageStorageClient:
         assert s3_key in presigned_url
         assert 'X-Amz-Signature' in presigned_url
     
-    @mock_s3
-    @mock_dynamodb
+    @mock_aws
+    @mock_aws
     def test_delete_image_success(self, client, mock_environment):
         """画像削除成功テスト"""
         # S3バケットを作成
@@ -376,7 +376,7 @@ class TestImageStorageClient:
         thumbnail_img = Image.open(BytesIO(thumbnail_data))
         assert thumbnail_img.size == (200, 200)
     
-    @mock_dynamodb
+    @mock_aws
     def test_search_images_by_content(self, client, mock_environment):
         """内容による画像検索テスト"""
         # DynamoDBテーブルを作成
@@ -433,7 +433,7 @@ class TestImageStorageClient:
         assert len(document_results) >= 1
         assert any(r['image_id'] == 'img-001' for r in document_results)
     
-    @mock_dynamodb
+    @mock_aws
     def test_get_user_image_statistics(self, client, mock_environment):
         """ユーザー画像統計取得テスト"""
         # DynamoDBテーブルを作成

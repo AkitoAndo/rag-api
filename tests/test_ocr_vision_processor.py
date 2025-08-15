@@ -3,7 +3,7 @@ OCR・Vision処理プロセッサのテストケース
 """
 import pytest
 import boto3
-from moto import mock_textract, mock_rekognition
+from moto import mock_aws
 from unittest.mock import patch, MagicMock
 from io import BytesIO
 from PIL import Image
@@ -39,7 +39,7 @@ class TestOCRVisionProcessor:
         # 実際の画像は省略し、バイトデータとして返す
         return b"fake text image data"
 
-    @mock_textract
+    @mock_aws
     def test_extract_text_success(self, processor, text_image_data):
         """OCRテキスト抽出成功テスト"""
         # Textractクライアントをモック
@@ -75,7 +75,7 @@ class TestOCRVisionProcessor:
             assert result['word_count'] == 4  # 2つの文の単語数
             assert result['character_count'] > 0
     
-    @mock_textract
+    @mock_aws
     def test_extract_text_empty(self, processor, sample_image_data):
         """テキストが無い画像のOCRテスト"""
         with patch.object(processor, 'textract_client') as mock_textract:
@@ -90,7 +90,7 @@ class TestOCRVisionProcessor:
             assert result['confidence'] == 0.0
             assert result['word_count'] == 0
     
-    @mock_textract
+    @mock_aws
     def test_extract_text_error_handling(self, processor, sample_image_data):
         """OCRエラーハンドリングテスト"""
         with patch.object(processor, 'textract_client') as mock_textract:
@@ -109,7 +109,7 @@ class TestOCRVisionProcessor:
             assert 'error' in result
             assert '画像形式が無効です' in result['error']
     
-    @mock_rekognition
+    @mock_aws
     def test_analyze_image_content_success(self, processor, sample_image_data):
         """画像内容分析成功テスト"""
         with patch.object(processor, 'rekognition_client') as mock_rekognition:
@@ -168,7 +168,7 @@ class TestOCRVisionProcessor:
             assert '文書や資料の画像のようです' in result['description']
             assert result['confidence'] > 0.8
     
-    @mock_rekognition
+    @mock_aws
     def test_analyze_image_natural_scene(self, processor, sample_image_data):
         """自然風景画像の分析テスト"""
         with patch.object(processor, 'rekognition_client') as mock_rekognition:
@@ -205,7 +205,7 @@ class TestOCRVisionProcessor:
             assert len(result['detected_texts']) == 0
             assert result['confidence'] > 0.9
     
-    @mock_rekognition
+    @mock_aws
     def test_analyze_image_error_handling(self, processor, sample_image_data):
         """Vision分析エラーハンドリングテスト"""
         with patch.object(processor, 'rekognition_client') as mock_rekognition:
@@ -224,7 +224,7 @@ class TestOCRVisionProcessor:
             assert 'error' in result
             assert '画像サイズが大きすぎます' in result['error']
     
-    @mock_textract
+    @mock_aws
     def test_analyze_document_structure_with_tables(self, processor, sample_image_data):
         """文書構造分析（表あり）テスト"""
         with patch.object(processor, 'textract_client') as mock_textract:
@@ -278,7 +278,7 @@ class TestOCRVisionProcessor:
             assert len(result['form_fields']) == 1
             assert result['confidence'] == 0.8
     
-    @mock_textract
+    @mock_aws
     def test_analyze_document_structure_unstructured(self, processor, sample_image_data):
         """非構造化文書の分析テスト"""
         with patch.object(processor, 'textract_client') as mock_textract:

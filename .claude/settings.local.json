@@ -27,9 +27,20 @@
       "Bash(py -m pytest tests/ -v --tb=short -x)",
       "Bash(py -m pytest tests/test_api_client.py tests/test_s3_vectors_client.py -v --tb=short)",
       "Bash(py -m pytest tests/test_api_client.py tests/test_s3_vectors_client.py tests/test_multi_tenant_s3_vectors.py -v --tb=short -q)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(grep:*)",
+      "Bash(sam:*)",
+      "Bash(\"C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\sam.cmd\" --version)",
+      "Bash(powershell:*)",
+      "Bash(mklink:*)",
+      "Bash(copy:*)",
+      "Bash(aws:*)",
+      "Bash(python:*)",
+      "Bash(py -m venv:*)",
+      "Bash(py:*)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "defaultMode": "acceptEdits"
   }
 }
