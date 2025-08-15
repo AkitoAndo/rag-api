@@ -14,6 +14,12 @@ Globals:
       Variables:
         VECTOR_BUCKET_NAME: !Ref VectorBucketName
         VECTOR_INDEX_NAME: !Ref VectorIndexName
+        IMAGE_BUCKET_NAME: !Ref ImageBucketName
+        IMAGE_TABLE_NAME: !Ref ImageTableName
+        USER_QUOTA_TABLE: !Ref UserQuotaTableName
+        USER_USAGE_TABLE: !Ref UserUsageTableName
+        TEXTRACT_REGION: !Ref AWS::Region
+        REKOGNITION_REGION: !Ref AWS::Region
 
 Parameters:
   VectorBucketName:
@@ -25,8 +31,115 @@ Parameters:
     Type: String  
     Description: S3 Vectorsインデックス名
     Default: "20250811-rag-vector-index"
+  
+  ImageBucketName:
+    Type: String
+    Description: 画像保存用S3バケット名
+    Default: "rag-images-bucket"
+  
+  ImageTableName:
+    Type: String
+    Description: 画像メタデータ用DynamoDBテーブル名
+    Default: "rag-image-metadata"
+  
+  UserQuotaTableName:
+    Type: String
+    Description: ユーザークォータ設定用DynamoDBテーブル名
+    Default: "rag-user-quotas"
+  
+  UserUsageTableName:
+    Type: String
+    Description: ユーザー使用状況用DynamoDBテーブル名
+    Default: "rag-user-usage"
 
 Resources:
+  # S3 Bucket for image storage
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref ImageBucketName
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - "*"
+            AllowedMethods:
+              - GET
+              - PUT
+              - POST
+              - DELETE
+            AllowedOrigins:
+              - "*"
+            MaxAge: 3600
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # DynamoDB Table for image metadata
+  ImageMetadataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref ImageTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+        - AttributeName: image_id
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+        - AttributeName: image_id
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: created_at-index
+          KeySchema:
+            - AttributeName: user_id
+              KeyType: HASH
+            - AttributeName: created_at
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # DynamoDB Table for user quotas
+  UserQuotaTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref UserQuotaTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
+  # DynamoDB Table for user usage tracking
+  UserUsageTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Ref UserUsageTableName
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: user_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: user_id
+          KeyType: HASH
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+
   # Cognito User Pool
   RAGUserPool:
     Type: AWS::Cognito::UserPool
@@ -232,6 +345,229 @@ Resources:
                 - "s3vectors:DeleteVectors"
               Resource: "*"
 
+  # Image processing Lambda Functions
+  ImageUploadFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_upload_handler
+      Timeout: 300
+      MemorySize: 1024
+      Events:
+        ImageUploadApi:
+          Type: Api
+          Properties:
+            Path: /images
+            Method: post
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "s3:PutObject"
+                - "s3:GetObject"
+                - "s3:DeleteObject"
+              Resource: !Sub "arn:aws:s3:::${ImageBucketName}/*"
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:PutItem"
+                - "dynamodb:GetItem"
+                - "dynamodb:UpdateItem"
+                - "dynamodb:DeleteItem"
+                - "dynamodb:Query"
+                - "dynamodb:Scan"
+              Resource: 
+                - !GetAtt ImageMetadataTable.Arn
+                - !GetAtt UserQuotaTable.Arn
+                - !GetAtt UserUsageTable.Arn
+            - Effect: "Allow"
+              Action:
+                - "textract:DetectDocumentText"
+                - "textract:AnalyzeDocument"
+              Resource: "*"
+            - Effect: "Allow"
+              Action:
+                - "rekognition:DetectLabels"
+                - "rekognition:DetectText"
+              Resource: "*"
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:PutVectors"
+              Resource: "*"
+
+  ImageListFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_list_handler
+      Events:
+        ImageListApi:
+          Type: Api
+          Properties:
+            Path: /images
+            Method: get
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:Query"
+                - "dynamodb:Scan"
+              Resource: !GetAtt ImageMetadataTable.Arn
+
+  ImageDetailFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_detail_handler
+      Events:
+        ImageDetailApi:
+          Type: Api
+          Properties:
+            Path: /images/{image_id}
+            Method: get
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "s3:GetObject"
+              Resource: !Sub "arn:aws:s3:::${ImageBucketName}/*"
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:GetItem"
+              Resource: !GetAtt ImageMetadataTable.Arn
+
+  ImageDeleteFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_delete_handler
+      Events:
+        ImageDeleteApi:
+          Type: Api
+          Properties:
+            Path: /images/{image_id}
+            Method: delete
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "s3:DeleteObject"
+              Resource: !Sub "arn:aws:s3:::${ImageBucketName}/*"
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:DeleteItem"
+                - "dynamodb:GetItem"
+                - "dynamodb:UpdateItem"
+              Resource: 
+                - !GetAtt ImageMetadataTable.Arn
+                - !GetAtt UserUsageTable.Arn
+            - Effect: "Allow"
+              Action:
+                - "s3vectors:DeleteVectors"
+              Resource: "*"
+
+  ImageQueryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_query_handler
+      Events:
+        ImageQueryApi:
+          Type: Api
+          Properties:
+            Path: /images/query
+            Method: post
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "bedrock:InvokeModel"
+                - "s3vectors:QueryVectors"
+              Resource: "*"
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:Query"
+              Resource: !GetAtt ImageMetadataTable.Arn
+
+  ImageStatisticsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: image_handlers.image_statistics_handler
+      Events:
+        ImageStatisticsApi:
+          Type: Api
+          Properties:
+            Path: /images/statistics
+            Method: get
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:Query"
+                - "dynamodb:Scan"
+              Resource: 
+                - !GetAtt ImageMetadataTable.Arn
+                - !GetAtt UserUsageTable.Arn
+
+  # Quota management Lambda Functions
+  QuotaStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_quota_status_handler
+      Events:
+        QuotaStatusApi:
+          Type: Api
+          Properties:
+            Path: /quota/status
+            Method: get
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:GetItem"
+                - "dynamodb:PutItem"
+                - "dynamodb:UpdateItem"
+              Resource: 
+                - !GetAtt UserQuotaTable.Arn
+                - !GetAtt UserUsageTable.Arn
+
+  PlanUpdateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: multi_tenant_handlers.user_plan_update_handler
+      Events:
+        PlanUpdateApi:
+          Type: Api
+          Properties:
+            Path: /quota/plan
+            Method: put
+            RestApiId: !Ref RagApiGateway
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Action:
+                - "dynamodb:PutItem"
+                - "dynamodb:UpdateItem"
+              Resource: !GetAtt UserQuotaTable.Arn
+
   # CORS Options Handler for all endpoints
   OptionsHandler:
     Type: AWS::Serverless::Function
@@ -269,6 +605,44 @@ Resources:
           Type: Api
           Properties:
             Path: /users/{user_id}/documents/{document_id}
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        # Image endpoints options
+        ImagesOptions:
+          Type: Api
+          Properties:
+            Path: /images
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        ImageDetailOptions:
+          Type: Api
+          Properties:
+            Path: /images/{image_id}
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        ImageQueryOptions:
+          Type: Api
+          Properties:
+            Path: /images/query
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        ImageStatisticsOptions:
+          Type: Api
+          Properties:
+            Path: /images/statistics
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        # Quota endpoints options
+        QuotaStatusOptions:
+          Type: Api
+          Properties:
+            Path: /quota/status
+            Method: options
+            RestApiId: !Ref RagApiGateway
+        PlanUpdateOptions:
+          Type: Api
+          Properties:
+            Path: /quota/plan
             Method: options
             RestApiId: !Ref RagApiGateway
 
@@ -360,3 +734,122 @@ Outputs:
     Value: !GetAtt UserDocumentDeleteFunction.Arn
     Export:
       Name: !Sub "${AWS::StackName}-user-document-delete-function-arn"
+  
+  # Image processing function ARNs
+  ImageUploadFunctionArn:
+    Description: "Image Upload Lambda Function ARN"
+    Value: !GetAtt ImageUploadFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-upload-function-arn"
+  
+  ImageListFunctionArn:
+    Description: "Image List Lambda Function ARN"
+    Value: !GetAtt ImageListFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-list-function-arn"
+  
+  ImageDetailFunctionArn:
+    Description: "Image Detail Lambda Function ARN"
+    Value: !GetAtt ImageDetailFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-detail-function-arn"
+  
+  ImageDeleteFunctionArn:
+    Description: "Image Delete Lambda Function ARN"
+    Value: !GetAtt ImageDeleteFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-delete-function-arn"
+  
+  ImageQueryFunctionArn:
+    Description: "Image Query Lambda Function ARN"
+    Value: !GetAtt ImageQueryFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-query-function-arn"
+  
+  ImageStatisticsFunctionArn:
+    Description: "Image Statistics Lambda Function ARN"
+    Value: !GetAtt ImageStatisticsFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-image-statistics-function-arn"
+  
+  # Quota management function ARNs
+  QuotaStatusFunctionArn:
+    Description: "Quota Status Lambda Function ARN"
+    Value: !GetAtt QuotaStatusFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-quota-status-function-arn"
+  
+  PlanUpdateFunctionArn:
+    Description: "Plan Update Lambda Function ARN"
+    Value: !GetAtt PlanUpdateFunction.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-plan-update-function-arn"
+  
+  # Image processing endpoint URLs
+  ImageUploadEndpoint:
+    Description: "Image Upload endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/images"
+    Export:
+      Name: !Sub "${AWS::StackName}-image-upload-endpoint"
+  
+  ImageListEndpoint:
+    Description: "Image List endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/images"
+    Export:
+      Name: !Sub "${AWS::StackName}-image-list-endpoint"
+  
+  ImageDetailEndpoint:
+    Description: "Image Detail endpoint URL template"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/images/{image_id}"
+    Export:
+      Name: !Sub "${AWS::StackName}-image-detail-endpoint"
+  
+  ImageQueryEndpoint:
+    Description: "Image Query endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/images/query"
+    Export:
+      Name: !Sub "${AWS::StackName}-image-query-endpoint"
+  
+  ImageStatisticsEndpoint:
+    Description: "Image Statistics endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/images/statistics"
+    Export:
+      Name: !Sub "${AWS::StackName}-image-statistics-endpoint"
+  
+  # Quota management endpoint URLs
+  QuotaStatusEndpoint:
+    Description: "Quota Status endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/quota/status"
+    Export:
+      Name: !Sub "${AWS::StackName}-quota-status-endpoint"
+  
+  PlanUpdateEndpoint:
+    Description: "Plan Update endpoint URL"
+    Value: !Sub "https://${RagApiGateway}.execute-api.${AWS::Region}.amazonaws.com/Prod/quota/plan"
+    Export:
+      Name: !Sub "${AWS::StackName}-plan-update-endpoint"
+  
+  # AWS Resource Information
+  ImageBucketName:
+    Description: "S3 Bucket name for image storage"
+    Value: !Ref ImageBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-image-bucket-name"
+  
+  ImageMetadataTableName:
+    Description: "DynamoDB Table name for image metadata"
+    Value: !Ref ImageMetadataTable
+    Export:
+      Name: !Sub "${AWS::StackName}-image-metadata-table-name"
+  
+  UserQuotaTableName:
+    Description: "DynamoDB Table name for user quotas"
+    Value: !Ref UserQuotaTable
+    Export:
+      Name: !Sub "${AWS::StackName}-user-quota-table-name"
+  
+  UserUsageTableName:
+    Description: "DynamoDB Table name for user usage"
+    Value: !Ref UserUsageTable
+    Export:
+      Name: !Sub "${AWS::StackName}-user-usage-table-name"

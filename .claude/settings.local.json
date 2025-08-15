@@ -1,7 +1,33 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git init:*)"
+      "Bash(git init:*)",
+      "Bash(git remote add:*)",
+      "Bash(git branch:*)",
+      "Bash(git checkout:*)",
+      "Bash(\"C:\\Program Files\\GitHub CLI\\gh.exe\" auth login --web --git-protocol ssh)",
+      "Bash(where:*)",
+      "Bash(\"C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\sam.cmd\" build)",
+      "Bash(\"C:\\Program Files\\Amazon\\AWSSAMCLI\\bin\\sam.cmd\" build --use-container)",
+      "Bash($env:PATH = \"C:\\Users\\28wwl\\AppData\\Local\\Programs\\Python\\Python311;$env:PATH\")",
+      "Bash(export:*)",
+      "Bash(C:/Users/28wwl/AppData/Local/Programs/Python/Python311/python.exe --version)",
+      "Bash(python -m pytest tests/ -v --tb=short)",
+      "Bash(py --version)",
+      "Bash(py -m pytest tests/ -v --tb=short)",
+      "Bash(py -m pip install:*)",
+      "Bash($env:PYTHONPATH = \"C:\\Users\\28wwl\\ProjectList\\rag-api\\src;$env:PYTHONPATH\")",
+      "Bash(py -m pytest tests/ -v --tb=short --co -q)",
+      "Bash(set PYTHONPATH=C:Users28wwlProjectListrag-apisrc)",
+      "Bash(py -m pytest tests/test_api_client.py -v --tb=short)",
+      "Bash(py -m ruff check:*)",
+      "Bash(move toolstest_api_gateway.py toolsmanual_test_api_gateway.py)",
+      "Bash(ren:*)",
+      "Bash(rm:*)",
+      "Bash(py -m pytest tests/ -v --tb=short -x)",
+      "Bash(py -m pytest tests/test_api_client.py tests/test_s3_vectors_client.py -v --tb=short)",
+      "Bash(py -m pytest tests/test_api_client.py tests/test_s3_vectors_client.py tests/test_multi_tenant_s3_vectors.py -v --tb=short -q)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

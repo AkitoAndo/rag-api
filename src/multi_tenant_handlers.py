@@ -13,8 +13,8 @@ from langchain_aws.chat_models import ChatBedrockConverse
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 
-from .s3_vectors_client import S3VectorsClient
-from .user_quota_manager import UserQuotaManager, estimate_vector_count, get_document_size_mb
+from s3_vectors_client import S3VectorsClient
+from user_quota_manager import UserQuotaManager, estimate_vector_count, get_document_size_mb
 
 # .envファイルを読み込み（ローカル開発時用）
 load_dotenv()
@@ -285,15 +285,27 @@ def user_add_document_handler(event: Dict[str, Any], context: Any) -> Dict[str, 
 
 
 def user_document_list_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """ユーザーのドキュメント一覧取得ハンドラー"""
+    """ユーザーのドキュメント一覧取得ハンドラー（フロントエンド要求対応版）"""
     try:
         # パスパラメータからユーザーIDを抽出
         user_id = extract_user_id_from_cognito(event)
         
-        # クエリパラメータを取得
+        # クエリパラメータを取得（フロントエンド仕様に準拠）
         query_params = event.get("queryStringParameters", {}) or {}
         limit = min(int(query_params.get("limit", 20)), 100)  # 最大100件
         offset = max(int(query_params.get("offset", 0)), 0)
+        search = query_params.get("search", "").strip()
+        sort_by = query_params.get("sort_by", "created_at")
+        sort_order = query_params.get("sort_order", "desc")
+        
+        # バリデーション
+        valid_sort_fields = ["created_at", "title", "vector_count", "content_length"]
+        if sort_by not in valid_sort_fields:
+            raise ValueError(f"Invalid sort_by field. Must be one of: {', '.join(valid_sort_fields)}")
+        
+        valid_sort_orders = ["asc", "desc"]
+        if sort_order not in valid_sort_orders:
+            raise ValueError(f"Invalid sort_order. Must be one of: {', '.join(valid_sort_orders)}")
         
         # 環境変数を取得
         vector_bucket_name = os.environ["VECTOR_BUCKET_NAME"]
@@ -301,20 +313,36 @@ def user_document_list_handler(event: Dict[str, Any], context: Any) -> Dict[str,
         # S3 Vectorsクライアントを初期化
         s3_vectors = S3VectorsClient()
         
-        # ユーザーのドキュメント一覧を取得
-        documents = s3_vectors.list_user_documents(
+        # ユーザーのドキュメント一覧を取得（拡張パラメータ付き）
+        documents = s3_vectors.list_user_documents_extended(
             user_id=user_id,
             vector_bucket_name=vector_bucket_name,
             limit=limit,
-            offset=offset
+            offset=offset,
+            search=search,
+            sort_by=sort_by,
+            sort_order=sort_order
         )
         
+        # 総数を取得（has_more判定用）
+        total_count = s3_vectors.get_user_documents_count(user_id, vector_bucket_name, search)
+        has_more = (offset + len(documents)) < total_count
+        
+        # フロントエンド仕様に準拠したレスポンス形式
         response_body = {
-            "documents": documents,
-            "total": len(documents),  # 実際の実装では合計数を別途取得
-            "limit": limit,
-            "offset": offset,
-            "user_id": user_id
+            "documents": [
+                {
+                    "document_id": doc.get("document_id", doc.get("id")),
+                    "title": doc.get("title", "Untitled"),
+                    "filename": doc.get("filename", "unknown"),
+                    "created_at": doc.get("created_at", doc.get("timestamp")),
+                    "vector_count": doc.get("vector_count", 0),
+                    "content_length": doc.get("content_length", len(doc.get("text", "")))
+                }
+                for doc in documents
+            ],
+            "total": total_count,
+            "has_more": has_more
         }
         
         return create_cors_response(200, response_body)
@@ -327,7 +355,7 @@ def user_document_list_handler(event: Dict[str, Any], context: Any) -> Dict[str,
 
 
 def user_document_delete_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """ユーザーのドキュメント削除ハンドラー"""
+    """ユーザーのドキュメント削除ハンドラー（フロントエンド要求対応版）"""
     try:
         # パスパラメータからユーザーIDとドキュメントIDを抽出
         user_id = extract_user_id_from_cognito(event)
@@ -343,41 +371,87 @@ def user_document_delete_handler(event: Dict[str, Any], context: Any) -> Dict[st
         # S3 Vectorsクライアントを初期化
         s3_vectors = S3VectorsClient()
         
+        # 削除前にベクトル数を取得
+        try:
+            document_info = s3_vectors.get_document_info(user_id, vector_bucket_name, document_id)
+            vector_count = document_info.get("vector_count", 0) if document_info else 0
+        except Exception:
+            vector_count = 0  # 情報取得に失敗した場合
+        
         # ドキュメントを削除
-        success = s3_vectors.delete_user_document(
+        success = s3_vectors.delete_user_document_with_count(
             user_id=user_id,
             vector_bucket_name=vector_bucket_name,
             document_id=document_id
         )
         
         if success:
+            # フロントエンド仕様に準拠したレスポンス
             response_body = {
-                "message": "Document deleted successfully",
-                "document_id": document_id,
-                "user_id": user_id
+                "message": "文書が正常に削除されました",
+                "deleted_vectors": vector_count
             }
             return create_cors_response(200, response_body)
         else:
-            return create_cors_response(404, {"error": "Document not found or could not be deleted"})
+            return create_cors_response(404, {
+                "error": "文書が見つからないか、削除できませんでした",
+                "code": "DOCUMENT_NOT_FOUND"
+            })
         
     except ValueError as e:
-        return create_cors_response(400, {"error": str(e)})
+        return create_cors_response(400, {
+            "error": str(e),
+            "code": "INVALID_REQUEST"
+        })
     except Exception as e:
         print(f"Error in user_document_delete_handler: {str(e)}")
-        return create_cors_response(500, {"error": "Internal server error"})
+        return create_cors_response(500, {
+            "error": "サーバー内部エラーが発生しました",
+            "code": "INTERNAL_SERVER_ERROR"
+        })
 
 
 def user_quota_status_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
-    """ユーザーのクォータ状況を取得"""
+    """ユーザーのクォータ状況を取得（画像関連含む拡張版）"""
     try:
         # CognitoからユーザーIDを抽出
         user_id = extract_user_id_from_cognito(event)
         
-        # クォータマネージャーでステータスを取得
+        # クォータマネージャーで拡張ステータスを取得
         quota_manager = UserQuotaManager()
-        quota_status = quota_manager.get_quota_status(user_id)
+        quota_status = quota_manager.get_extended_quota_status(user_id)
         
-        return create_cors_response(200, quota_status)
+        # フロントエンド仕様に合わせてレスポンス形式を調整
+        formatted_response = {
+            "user_id": quota_status["user_id"],
+            "documents": {
+                "count": quota_status["quotas"]["documents"]["current"],
+                "limit": quota_status["quotas"]["documents"]["max"],
+                "usage_percentage": quota_status["quotas"]["documents"]["percentage"]
+            },
+            "images": {
+                "count": quota_status["quotas"]["images"]["count"],
+                "limit": quota_status["quotas"]["images"]["limit"],
+                "usage_percentage": quota_status["quotas"]["images"]["usage_percentage"]
+            },
+            "storage": {
+                "used_mb": quota_status["quotas"]["storage"]["current_mb"],
+                "limit_mb": quota_status["quotas"]["storage"]["max_mb"],
+                "usage_percentage": quota_status["quotas"]["storage"]["percentage"]
+            },
+            "api_calls": {
+                "this_month": quota_status["quotas"]["monthly_queries"]["current"],
+                "limit": quota_status["quotas"]["monthly_queries"]["max"],
+                "usage_percentage": quota_status["quotas"]["monthly_queries"]["percentage"]
+            },
+            "vectors": {
+                "count": quota_status["quotas"]["vectors"]["current"],
+                "limit": quota_status["quotas"]["vectors"]["max"],
+                "usage_percentage": quota_status["quotas"]["vectors"]["percentage"]
+            }
+        }
+        
+        return create_cors_response(200, formatted_response)
         
     except ValueError as e:
         return create_cors_response(400, {"error": str(e)})

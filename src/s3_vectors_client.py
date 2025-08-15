@@ -237,7 +237,7 @@ class S3VectorsClient:
         limit: int = 20, 
         offset: int = 0
     ) -> List[Dict[str, Any]]:
-        """ユーザーの文書一覧を取得"""
+        """ユーザーの文書一覧を取得（基本版）"""
         if limit <= 0:
             raise ValueError("Limit must be positive")
         if offset < 0:
@@ -262,6 +262,142 @@ class S3VectorsClient:
             if "not found" in str(e).lower() or "does not exist" in str(e).lower():
                 return []
             raise e
+
+    def list_user_documents_extended(
+        self,
+        user_id: str,
+        vector_bucket_name: str,
+        limit: int = 20,
+        offset: int = 0,
+        search: str = "",
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
+    ) -> List[Dict[str, Any]]:
+        """ユーザーの文書一覧を取得（拡張版：検索・ソート対応）"""
+        if limit <= 0:
+            raise ValueError("Limit must be positive")
+        if offset < 0:
+            raise ValueError("Offset must be non-negative")
+        
+        # ユーザー固有のインデックス名を取得
+        index_name = self.get_user_index_name(user_id)
+        
+        try:
+            # 基本的な文書一覧を取得
+            all_documents = self.s3vectors_client.list_documents(
+                vectorBucketName=vector_bucket_name,
+                indexName=index_name,
+                limit=1000  # 大きな値で全件取得（実際の実装では改善が必要）
+            )
+            
+            # 検索フィルタ適用
+            if search:
+                all_documents = [
+                    doc for doc in all_documents
+                    if search.lower() in doc.get("title", "").lower()
+                ]
+            
+            # ソート適用
+            reverse = (sort_order == "desc")
+            if sort_by == "title":
+                all_documents.sort(key=lambda x: x.get("title", ""), reverse=reverse)
+            elif sort_by == "vector_count":
+                all_documents.sort(key=lambda x: x.get("vector_count", 0), reverse=reverse)
+            elif sort_by == "content_length":
+                all_documents.sort(key=lambda x: len(x.get("text", "")), reverse=reverse)
+            else:  # created_at
+                all_documents.sort(key=lambda x: x.get("created_at", ""), reverse=reverse)
+            
+            # ページネーション適用
+            return all_documents[offset:offset + limit]
+            
+        except Exception as e:
+            # インデックスが存在しない場合は空配列を返す
+            if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                return []
+            raise e
+
+    def get_user_documents_count(
+        self,
+        user_id: str,
+        vector_bucket_name: str,
+        search: str = ""
+    ) -> int:
+        """ユーザーの文書総数を取得（検索条件適用）"""
+        # ユーザー固有のインデックス名を取得
+        index_name = self.get_user_index_name(user_id)
+        
+        try:
+            # 全文書を取得して数をカウント
+            all_documents = self.s3vectors_client.list_documents(
+                vectorBucketName=vector_bucket_name,
+                indexName=index_name,
+                limit=10000  # 大きな値で全件取得
+            )
+            
+            # 検索フィルタ適用
+            if search:
+                filtered_documents = [
+                    doc for doc in all_documents
+                    if search.lower() in doc.get("title", "").lower()
+                ]
+                return len(filtered_documents)
+            
+            return len(all_documents)
+            
+        except Exception as e:
+            # インデックスが存在しない場合は0を返す
+            if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                return 0
+            raise e
+
+    def get_document_info(
+        self,
+        user_id: str,
+        vector_bucket_name: str,
+        document_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """特定の文書情報を取得"""
+        index_name = self.get_user_index_name(user_id)
+        
+        try:
+            # 文書一覧から該当文書を検索
+            documents = self.s3vectors_client.list_documents(
+                vectorBucketName=vector_bucket_name,
+                indexName=index_name,
+                limit=1000
+            )
+            
+            for doc in documents:
+                if doc.get("document_id") == document_id or doc.get("id") == document_id:
+                    return doc
+            
+            return None
+            
+        except Exception as e:
+            if "not found" in str(e).lower() or "does not exist" in str(e).lower():
+                return None
+            raise e
+
+    def delete_user_document_with_count(
+        self,
+        user_id: str,
+        vector_bucket_name: str,
+        document_id: str
+    ) -> bool:
+        """ユーザーの特定文書を削除（ベクトル数計算付き）"""
+        if not document_id.strip():
+            raise ValueError("Document ID cannot be empty")
+        
+        # ユーザー固有のインデックス名を取得
+        
+        try:
+            # 既存の削除メソッドを使用
+            return self.delete_user_document(user_id, vector_bucket_name, document_id)
+            
+        except Exception as e:
+            print(f"Error deleting document {document_id} for user {user_id}: {str(e)}")
+            return False
 
     def get_user_statistics(
         self, 

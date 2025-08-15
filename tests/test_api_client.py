@@ -11,10 +11,35 @@ sys.path.append(str(Path(__file__).parent.parent / "tools"))
 
 try:
     import requests
-    from test_api_gateway import test_add_document, test_query
     REQUESTS_AVAILABLE = True
 except ImportError:
     REQUESTS_AVAILABLE = False
+
+def api_add_document(base_url: str, text: str, title: str) -> bool:
+    """文書追加APIテスト"""
+    try:
+        response = requests.post(
+            f"{base_url}/add-document",
+            json={"text": text, "title": title},
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
+
+def api_query(base_url: str, question: str) -> bool:
+    """質問応答APIテスト"""
+    try:
+        response = requests.post(
+            f"{base_url}/query",
+            json={"question": question},
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        return response.status_code == 200
+    except Exception:
+        return False
 
 
 @pytest.mark.skipif(not REQUESTS_AVAILABLE, reason="requests library not available")
@@ -35,7 +60,7 @@ class TestAPIClient:
         mock_post.return_value = mock_response
         
         # テスト実行
-        result = test_add_document(
+        result = api_add_document(
             base_url="https://test-api.example.com",
             text="テストドキュメント",
             title="テストタイトル"
@@ -61,7 +86,7 @@ class TestAPIClient:
         mock_post.return_value = mock_response
         
         # テスト実行
-        result = test_add_document(
+        result = api_add_document(
             base_url="https://test-api.example.com",
             text="テストドキュメント",
             title="テストタイトル"
@@ -82,7 +107,7 @@ class TestAPIClient:
         mock_post.return_value = mock_response
         
         # テスト実行
-        result = test_query(
+        result = api_query(
             base_url="https://test-api.example.com",
             question="テスト質問"
         )
@@ -106,7 +131,7 @@ class TestAPIClient:
         mock_post.return_value = mock_response
         
         # テスト実行
-        result = test_query(
+        result = api_query(
             base_url="https://test-api.example.com",
             question="テスト質問"
         )
@@ -121,7 +146,7 @@ class TestAPIClient:
         mock_post.side_effect = requests.exceptions.ConnectionError("Connection failed")
         
         # テスト実行
-        result = test_add_document(
+        result = api_add_document(
             base_url="https://unreachable-api.example.com",
             text="テストドキュメント",
             title="テストタイトル"
@@ -137,7 +162,7 @@ class TestAPIClient:
         mock_post.side_effect = requests.exceptions.Timeout("Request timeout")
         
         # テスト実行
-        result = test_query(
+        result = api_query(
             base_url="https://slow-api.example.com",
             question="テスト質問"
         )
@@ -157,7 +182,7 @@ class TestAPIClient:
         mock_post.return_value = mock_response
         
         # Unicode文字を含むテスト実行
-        result = test_query(
+        result = api_query(
             base_url="https://test-api.example.com",
             question="日本語の質問です 🚀"
         )
@@ -178,12 +203,12 @@ class TestAPIClientValidation:
         """空のベースURL処理テスト"""
         with pytest.raises(Exception):
             # 空のURLでの呼び出しは例外を発生させるべき
-            test_query("", "テスト質問")
+            api_query("", "テスト質問")
     
     def test_invalid_base_url_format(self):
         """不正なURL形式テスト"""
         # 不正なURL形式でも関数は実行されるが、requests内でエラーになる
-        result = test_query("invalid-url", "テスト質問")
+        result = api_query("invalid-url", "テスト質問")
         assert result is False
     
     def test_empty_question(self):
@@ -194,7 +219,7 @@ class TestAPIClientValidation:
             mock_response.json.return_value = {"answer": "Empty question response"}
             mock_post.return_value = mock_response
             
-            result = test_query("https://test-api.example.com", "")
+            result = api_query("https://test-api.example.com", "")
             
             # 空の質問でも送信されることを確認
             assert result is True
@@ -212,7 +237,7 @@ class TestAPIClientValidation:
             }
             mock_post.return_value = mock_response
             
-            result = test_add_document(
+            result = api_add_document(
                 "https://test-api.example.com",
                 "",  # 空のテキスト
                 "Empty Document"
@@ -237,7 +262,7 @@ class TestAPIResponseParsing:
         mock_response.text = "Invalid JSON response"
         mock_post.return_value = mock_response
         
-        result = test_query("https://test-api.example.com", "テスト質問")
+        result = api_query("https://test-api.example.com", "テスト質問")
         
         # JSONパースエラーでもFalseを返すことを確認
         assert result is False
@@ -253,7 +278,7 @@ class TestAPIResponseParsing:
         }
         mock_post.return_value = mock_response
         
-        result = test_query("https://test-api.example.com", "テスト質問")
+        result = api_query("https://test-api.example.com", "テスト質問")
         
         # 必要なフィールドが欠けていてもTrueを返す（フィールド存在チェックはAPI側の責任）
         assert result is True

@@ -2,7 +2,7 @@ import json
 import os
 import time
 import random
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 import boto3
 import xmltodict
@@ -10,7 +10,7 @@ from langchain_aws.chat_models import ChatBedrockConverse
 from langchain_core.messages import HumanMessage, SystemMessage
 from dotenv import load_dotenv
 
-from .s3_vectors_client import S3VectorsClient
+from s3_vectors_client import S3VectorsClient
 
 # .envファイルを読み込み（ローカル開発時用）
 load_dotenv()

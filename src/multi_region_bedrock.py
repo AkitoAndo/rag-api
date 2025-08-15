@@ -1,5 +1,4 @@
 """マルチリージョンBedrock クライアント"""
-import os
 import boto3
 import random
 from typing import List, Optional
@@ -99,7 +98,6 @@ class MultiRegionBedrockClient:
                 
             try:
                 # 簡単なテスト呼び出し
-                client = self.clients[region]
                 bedrock = boto3.client('bedrock', region_name=region)
                 
                 # モデル一覧取得でテスト

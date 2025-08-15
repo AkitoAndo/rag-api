@@ -1,14 +1,12 @@
 """
 ユーザークォータ管理機能
 """
-import json
 import os
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
+from typing import Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 from enum import Enum
 import boto3
-from botocore.exceptions import ClientError
 
 
 class QuotaType(Enum):
@@ -64,28 +62,43 @@ class QuotaUsage:
 class UserQuotaManager:
     """ユーザークォータ管理クラス"""
 
-    # プラン別デフォルト設定
+    # プラン別デフォルト設定（画像機能拡張版）
     PLAN_DEFAULTS = {
         "free": {
             "max_documents": 50,
             "max_vectors": 5000,
             "max_storage_size_mb": 50,
             "max_monthly_queries": 500,
-            "max_daily_uploads": 5
+            "max_daily_uploads": 5,
+            # 画像関連制限
+            "max_images": 20,
+            "max_image_storage_mb": 100,
+            "max_image_vectors": 1000,
+            "max_monthly_image_analyses": 50
         },
         "basic": {
             "max_documents": 200,
             "max_vectors": 20000,
             "max_storage_size_mb": 200,
             "max_monthly_queries": 2000,
-            "max_daily_uploads": 20
+            "max_daily_uploads": 20,
+            # 画像関連制限
+            "max_images": 100,
+            "max_image_storage_mb": 500,
+            "max_image_vectors": 5000,
+            "max_monthly_image_analyses": 200
         },
         "premium": {
             "max_documents": 1000,
             "max_vectors": 100000,
             "max_storage_size_mb": 1000,
             "max_monthly_queries": 10000,
-            "max_daily_uploads": 100
+            "max_daily_uploads": 100,
+            # 画像関連制限
+            "max_images": 500,
+            "max_image_storage_mb": 2000,
+            "max_image_vectors": 20000,
+            "max_monthly_image_analyses": 1000
         }
     }
 
@@ -358,6 +371,160 @@ class UserQuotaManager:
             )
         except Exception as e:
             print(f"Error resetting daily usage: {e}")
+
+    # 画像関連クォータ管理メソッド
+    def check_image_quota_before_upload(self, user_id: str) -> Tuple[bool, str]:
+        """画像アップロード前のクォータチェック"""
+        quota = self.get_user_quota(user_id)
+        usage = self.get_user_usage(user_id)
+        
+        # 画像数制限チェック
+        current_images = getattr(usage, 'current_images', 0)
+        max_images = getattr(quota, 'max_images', self.PLAN_DEFAULTS[quota.plan_type]['max_images'])
+        
+        if current_images >= max_images:
+            return False, f"画像数制限に達しています ({current_images}/{max_images})"
+        
+        # 画像ストレージ制限は個別ファイルでチェック
+        return True, "OK"
+    
+    def check_image_storage_quota(self, user_id: str, new_image_size_mb: float) -> Tuple[bool, str]:
+        """画像ストレージクォータチェック"""
+        quota = self.get_user_quota(user_id)
+        usage = self.get_user_usage(user_id)
+        
+        current_image_storage = getattr(usage, 'current_image_storage_mb', 0.0)
+        max_image_storage = getattr(quota, 'max_image_storage_mb', self.PLAN_DEFAULTS[quota.plan_type]['max_image_storage_mb'])
+        
+        if current_image_storage + new_image_size_mb > max_image_storage:
+            return False, f"画像ストレージ制限を超過します ({current_image_storage + new_image_size_mb:.2f}/{max_image_storage} MB)"
+        
+        return True, "OK"
+    
+    def check_image_analysis_quota(self, user_id: str) -> Tuple[bool, str]:
+        """画像分析実行クォータチェック"""
+        quota = self.get_user_quota(user_id)
+        usage = self.get_user_usage(user_id)
+        
+        # 現在の月をチェック
+        current_month = datetime.utcnow().strftime("%Y-%m")
+        usage_month = getattr(usage, 'analysis_month_year', current_month)
+        
+        # 月が変わった場合はリセット
+        monthly_analyses = getattr(usage, 'monthly_image_analyses', 0)
+        if usage_month != current_month:
+            monthly_analyses = 0
+        
+        max_analyses = getattr(quota, 'max_monthly_image_analyses', self.PLAN_DEFAULTS[quota.plan_type]['max_monthly_image_analyses'])
+        
+        if monthly_analyses >= max_analyses:
+            return False, f"月間画像分析制限に達しています ({monthly_analyses}/{max_analyses})"
+        
+        return True, "OK"
+    
+    def update_image_usage_after_upload(self, user_id: str, image_size_mb: float, vector_count: int):
+        """画像アップロード後の使用量更新"""
+        if not self.usage_table:
+            return
+        
+        try:
+            current_month = datetime.utcnow().strftime("%Y-%m")
+            
+            self.usage_table.update_item(
+                Key={'user_id': user_id},
+                UpdateExpression="""
+                    ADD current_images :img_inc,
+                        current_image_storage_mb :storage_inc,
+                        current_image_vectors :vec_inc,
+                        monthly_image_analyses :analysis_inc
+                    SET analysis_month_year = :month_year,
+                        last_image_upload_date = :upload_date
+                """,
+                ExpressionAttributeValues={
+                    ':img_inc': 1,
+                    ':storage_inc': image_size_mb,
+                    ':vec_inc': vector_count,
+                    ':analysis_inc': 1,  # OCR/Vision分析実行としてカウント
+                    ':month_year': current_month,
+                    ':upload_date': datetime.utcnow().isoformat()
+                }
+            )
+        except Exception as e:
+            print(f"Error updating image usage after upload: {e}")
+    
+    def update_image_usage_after_delete(self, user_id: str, image_size_mb: float, vector_count: int):
+        """画像削除後の使用量更新"""
+        if not self.usage_table:
+            return
+        
+        try:
+            self.usage_table.update_item(
+                Key={'user_id': user_id},
+                UpdateExpression="""
+                    ADD current_images :img_dec,
+                        current_image_storage_mb :storage_dec,
+                        current_image_vectors :vec_dec
+                    SET last_image_delete_date = :delete_date
+                """,
+                ExpressionAttributeValues={
+                    ':img_dec': -1,
+                    ':storage_dec': -image_size_mb,
+                    ':vec_dec': -vector_count,
+                    ':delete_date': datetime.utcnow().isoformat()
+                }
+            )
+        except Exception as e:
+            print(f"Error updating image usage after delete: {e}")
+    
+    def get_extended_quota_status(self, user_id: str) -> Dict[str, Any]:
+        """画像関連を含む拡張クォータ状況を取得"""
+        base_status = self.get_quota_status(user_id)
+        quota = self.get_user_quota(user_id)
+        usage = self.get_user_usage(user_id)
+        
+        # 画像関連クォータを追加
+        def safe_percentage(current: float, maximum: float) -> float:
+            return (current / maximum * 100) if maximum > 0 else 0.0
+        
+        # 画像関連の使用状況を取得
+        current_images = getattr(usage, 'current_images', 0)
+        current_image_storage = getattr(usage, 'current_image_storage_mb', 0.0)
+        current_image_vectors = getattr(usage, 'current_image_vectors', 0)
+        monthly_image_analyses = getattr(usage, 'monthly_image_analyses', 0)
+        
+        # 制限値を取得
+        max_images = getattr(quota, 'max_images', self.PLAN_DEFAULTS[quota.plan_type]['max_images'])
+        max_image_storage = getattr(quota, 'max_image_storage_mb', self.PLAN_DEFAULTS[quota.plan_type]['max_image_storage_mb'])
+        max_image_vectors = getattr(quota, 'max_image_vectors', self.PLAN_DEFAULTS[quota.plan_type]['max_image_vectors'])
+        max_analyses = getattr(quota, 'max_monthly_image_analyses', self.PLAN_DEFAULTS[quota.plan_type]['max_monthly_image_analyses'])
+        
+        # 画像関連クォータを追加
+        base_status["quotas"]["images"] = {
+            "count": current_images,
+            "limit": max_images,
+            "usage_percentage": safe_percentage(current_images, max_images)
+        }
+        
+        base_status["quotas"]["image_storage"] = {
+            "used_mb": current_image_storage,
+            "limit_mb": max_image_storage,
+            "usage_percentage": safe_percentage(current_image_storage, max_image_storage)
+        }
+        
+        base_status["quotas"]["image_vectors"] = {
+            "count": current_image_vectors,
+            "limit": max_image_vectors,
+            "usage_percentage": safe_percentage(current_image_vectors, max_image_vectors)
+        }
+        
+        base_status["quotas"]["monthly_image_analyses"] = {
+            "count": monthly_image_analyses,
+            "limit": max_analyses,
+            "usage_percentage": safe_percentage(monthly_image_analyses, max_analyses),
+            "month": getattr(usage, 'analysis_month_year', datetime.utcnow().strftime("%Y-%m"))
+        }
+        
+        return base_status
 
 
 # 便利な関数
